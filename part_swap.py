@@ -197,6 +197,32 @@ def make_video(swap_index, source_image, target_video, reconstruction_module, se
         return predictions
 
 
+def main(source_image, target_video, supervised, config, checkpoint, first_order_motion_model, cpu, swap_index, hard, use_source_segmentation, result_video):
+    source_image = imageio.imread(source_image)
+
+    target_video = imageio.mimread(target_video, memtest=False)
+    source_image = resize(source_image, (256, 256))[..., :3]
+    target_video = [resize(frame, (256, 256))[..., :3] for frame in target_video]
+
+    blend_scale = (256 / 4) / 512 if supervised else 1
+    reconstruction_module, segmentation_module = load_checkpoints(config, checkpoint, blend_scale=blend_scale, 
+                                                                  first_order_motion_model=first_order_motion_model, cpu=cpu)
+
+    if supervised:
+        face_parser = load_face_parser(cpu)
+    else:
+        face_parser = None
+    predictions = make_video(swap_index, source_image, target_video, reconstruction_module, segmentation_module,
+                             face_parser, hard=hard, use_source_segmentation=use_source_segmentation, cpu=cpu)
+
+    # Read fps of the target video and save result with the same fps
+    reader = imageio.get_reader(target_video)
+    fps = reader.get_meta_data()['fps']
+    reader.close()
+
+    imageio.mimsave(result_video, [img_as_ubyte(frame) for frame in predictions], fps=fps)
+
+
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", required=True, help="path to config")
@@ -219,26 +245,4 @@ if __name__ == "__main__":
 
     opt = parser.parse_args()
 
-    source_image = imageio.imread(opt.source_image)
-
-    target_video = imageio.mimread(opt.target_video, memtest=False)
-    source_image = resize(source_image, (256, 256))[..., :3]
-    target_video = [resize(frame, (256, 256))[..., :3] for frame in target_video]
-
-    blend_scale = (256 / 4) / 512 if opt.supervised else 1
-    reconstruction_module, segmentation_module = load_checkpoints(opt.config, opt.checkpoint, blend_scale=blend_scale, 
-                                                                  first_order_motion_model=opt.first_order_motion_model, cpu=opt.cpu)
-
-    if opt.supervised:
-        face_parser = load_face_parser(opt.cpu)
-    else:
-        face_parser = None
-    predictions = make_video(opt.swap_index, source_image, target_video, reconstruction_module, segmentation_module,
-                             face_parser, hard=opt.hard, use_source_segmentation=opt.use_source_segmentation, cpu=opt.cpu)
-
-    # Read fps of the target video and save result with the same fps
-    reader = imageio.get_reader(opt.target_video)
-    fps = reader.get_meta_data()['fps']
-    reader.close()
-
-    imageio.mimsave(opt.result_video, [img_as_ubyte(frame) for frame in predictions], fps=fps)
+    main(opt.source_image, opt.target_video, opt.supervised, opt.config, opt.checkpoint, opt.first_order_motion_model, opt.cpu, opt.swap_index, opt.hard, opt.use_source_segmentation, opt.result_video)

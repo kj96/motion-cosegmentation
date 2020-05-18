@@ -1,0 +1,6 @@
+__pycache__/
+input/
+models/
+modules/__pycache__/
+result.mp4
+sync_batchnorm/__pycache__/
