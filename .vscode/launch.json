@@ -1,0 +1,18 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+            "--config", "./config/vox-256-sem-5segments.yaml", "--target_video", "./input/VID_20200511_203333.mp4", "--target_image", "./input/ekawpu.jpg", "--source_image", "/home/kj/Downloads/NEFER-Video/styles/TonyStartk.jpg", "--checkpoint", "./models/vox-5segments.pth.tar", "--swap_index", "0,1"
+            ],
+        }
+    ]
+}

@@ -22,6 +22,8 @@ from logger import load_reconstruction_module, load_segmentation_module
 
 from modules.util import AntiAliasInterpolation2d
 from modules.dense_motion import DenseMotionNetwork
+import copy
+from PIL import Image
 
 
 if sys.version_info[0] < 3:
@@ -169,10 +171,13 @@ def make_video(swap_index, source_image, target_video, reconstruction_module, se
         if not cpu:
             source = source.cuda()
         target = torch.tensor(np.array(target_video)[np.newaxis].astype(np.float32)).permute(0, 4, 1, 2, 3)
+        print("# target: ", target.shape)
+        print("# target[2]: ", target.shape[2])
         seg_source = segmentation_module(source)
 
         for frame_idx in tqdm(range(target.shape[2])):
             target_frame = target[:, :, frame_idx]
+            print("# target_frame: ", target_frame.shape)
             if not cpu:
                 target_frame = target_frame.cuda()
  
@@ -197,12 +202,48 @@ def make_video(swap_index, source_image, target_video, reconstruction_module, se
         return predictions
 
 
-def main(source_image, target_video, supervised, config, checkpoint, first_order_motion_model, cpu, swap_index, hard, use_source_segmentation, result_video):
-    source_image = imageio.imread(source_image)
+def make_frame(swap_index, source_image, target_image, reconstruction_module, segmentation_module, face_parser=None,
+               hard=False, use_source_segmentation=False, cpu=False):
+    assert type(swap_index) == list
+    with torch.no_grad():
+        prediction = []
+        source = torch.tensor(source_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
+        if not cpu:
+            source = source.cuda()
+        # target = torch.tensor(np.array(target_video)[np.newaxis].astype(np.float32)).permute(0, 4, 1, 2, 3)
+        seg_source = segmentation_module(source)
 
-    target_video = imageio.mimread(target_video, memtest=False)
+        # for frame_idx in tqdm(range(target.shape[2])):
+        print("# target_frame[1]: ", target_image.shape)
+        target_frame = torch.tensor(target_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
+        print("# target_frame[2]: ", target_frame.shape)
+        if not cpu:
+            target_frame = target_frame.cuda()
+
+        seg_target = segmentation_module(target_frame)
+
+        # Computing blend mask
+        if face_parser is not None:
+            blend_mask = F.interpolate(source if use_source_segmentation else target_frame, size=(512, 512))
+            blend_mask = (blend_mask - face_parser.mean) / face_parser.std
+            blend_mask = torch.softmax(face_parser(blend_mask)[0], dim=1)
+        else:
+            blend_mask = seg_source['segmentation'] if use_source_segmentation else seg_target['segmentation']
+
+        blend_mask = blend_mask[:, swap_index].sum(dim=1, keepdim=True)
+        if hard:
+            blend_mask = (blend_mask > 0.5).type(blend_mask.type())
+
+        out = reconstruction_module(source, target_frame, seg_source=seg_source, seg_target=seg_target,
+                                    blend_mask=blend_mask, use_source_segmentation=use_source_segmentation)
+
+        prediction = np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0]
+        return prediction
+
+
+def main(source_image, target_image, target_video, supervised, config, checkpoint, first_order_motion_model, cpu, swap_index, hard, use_source_segmentation, result_video):
+    source_image = imageio.imread(source_image)
     source_image = resize(source_image, (256, 256))[..., :3]
-    target_video = [resize(frame, (256, 256))[..., :3] for frame in target_video]
 
     blend_scale = (256 / 4) / 512 if supervised else 1
     reconstruction_module, segmentation_module = load_checkpoints(config, checkpoint, blend_scale=blend_scale, 
@@ -212,24 +253,43 @@ def main(source_image, target_video, supervised, config, checkpoint, first_order
         face_parser = load_face_parser(cpu)
     else:
         face_parser = None
-    predictions = make_video(swap_index, source_image, target_video, reconstruction_module, segmentation_module,
-                             face_parser, hard=hard, use_source_segmentation=use_source_segmentation, cpu=cpu)
 
-    # Read fps of the target video and save result with the same fps
-    reader = imageio.get_reader(target_video)
-    fps = reader.get_meta_data()['fps']
-    reader.close()
+    if target_video:
+        target_video_arr = imageio.mimread(target_video, memtest=False)
+        target_video_arr = [resize(frame, (256, 256))[..., :3] for frame in target_video_arr]
+        
+        predictions = make_video(swap_index, source_image, target_video_arr, reconstruction_module, segmentation_module,
+                                face_parser, hard=hard, use_source_segmentation=use_source_segmentation, cpu=cpu)
 
-    imageio.mimsave(result_video, [img_as_ubyte(frame) for frame in predictions], fps=fps)
+        # Read fps of the target video and save result with the same fps
+        reader = imageio.get_reader(target_video)
+        fps = reader.get_meta_data()['fps']
+        reader.close()
 
+        imageio.mimsave(result_video, [img_as_ubyte(frame) for frame in predictions], fps=fps)
+    elif target_image:
+        print("IN PROGRESS")
+        target_image = np.asarray(imageio.imread(target_image))
+        target_image = resize(target_image, (256, 256))[..., :3]
+        predictions = make_frame(swap_index, source_image, target_image, reconstruction_module, segmentation_module,
+                                face_parser, hard=hard, use_source_segmentation=use_source_segmentation, cpu=cpu)
+        print("# predictions: ", type(predictions))
+        print("# predictions: ", predictions.shape)
+        pred = imageio.imwrite('result.png',img_as_ubyte(predictions), 'RGB')
+        pred = Image.open('result.png')
+        pred.show()
+
+    else:
+        print("No target provided")
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", required=True, help="path to config")
     parser.add_argument("--checkpoint", default='vox-cpk.pth.tar', help="path to checkpoint to restore")
 
-    parser.add_argument("--source_image", default='sup-mat/source.png', help="path to source image")
-    parser.add_argument("--target_video", default='sup-mat/source.png', help="path to target video")
+    parser.add_argument("--source_image", default=None, help="path to source image")
+    parser.add_argument("--target_image", default='./input/ekawpu.jpg', help="path to target image")
+    parser.add_argument("--target_video", default=None, help="path to target video")
     parser.add_argument("--result_video", default='result.mp4', help="path to output")
 
     parser.add_argument("--swap_index", default="1,2,5", type=lambda x: list(map(int, x.split(','))),
@@ -244,5 +304,6 @@ if __name__ == "__main__":
 
 
     opt = parser.parse_args()
-
-    main(opt.source_image, opt.target_video, opt.supervised, opt.config, opt.checkpoint, opt.first_order_motion_model, opt.cpu, opt.swap_index, opt.hard, opt.use_source_segmentation, opt.result_video)
+    print("# target_image: ", opt.target_image)
+    print("# target_video: ", opt.target_video)
+    main(opt.source_image, opt.target_image, opt.target_video, opt.supervised, opt.config, opt.checkpoint, opt.first_order_motion_model, opt.cpu, opt.swap_index, opt.hard, opt.use_source_segmentation, opt.result_video)
